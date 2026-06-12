@@ -92,8 +92,11 @@ if st.session_state["page"] == "Form":
                     # Append data structure downstream
                     updated_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
                     
-                    # Overwrite/push straight back to target worksheet endpoint
-                    conn.write(data=updated_df, worksheet="Sheet1")
+                    # Overwrite/push straight back to target worksheet endpoint using the correct .update() method
+                    conn.update(worksheet="Sheet1", data=updated_df)
+                    
+                    # Clear internal cache so dashboard registers fresh entries instantly
+                    st.cache_data.clear()
                     
                     st.success("✅ Transaction complete. Row verified and saved to Google Sheets.")
                     st.balloons()
@@ -115,7 +118,7 @@ elif st.session_state["page"] == "Dashboard":
             df = pd.DataFrame()
 
     if df.empty:
-        st.warning("⚠️ No database metrics located in 'conn.update(worksheet="Sheet1", data=updated_df)'. Submit form registrations to display analytics.")
+        st.warning("⚠️ No database metrics located in 'Sheet1'. Submit form registrations to display analytics.")
     else:
         # Cast critical text-based table elements back to high-fidelity numbers safely
         for col in ["guava_beds", "gesho_beds", "lemon_beds", "grevillea_beds"]:
