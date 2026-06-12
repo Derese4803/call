@@ -8,8 +8,8 @@ from streamlit_gsheets import GSheetsConnection
 # Configure layout to wide mode for the dashboard grid system
 st.set_page_config(page_title="OAF Nursery Management Portal", layout="wide", page_icon="🌳")
 
-# Establish direct data connection to Google Sheets using Streamlit Secrets
-conn = st.connection("gsheets", type=GSheetsConnection)
+# FIX: Added gcloud="gcs" to explicitly enable authenticated cloud writing rules
+conn = st.connection("gsheets", type=GSheetsConnection, gcloud="gcs")
 
 # Simple state manager to handle sidebar page routing
 if "page" not in st.session_state: 
@@ -101,76 +101,4 @@ if st.session_state["page"] == "Form":
                     st.success("✅ Transaction complete. Row verified and saved to Google Sheets.")
                     st.balloons()
                 except Exception as e:
-                    st.error(f"GSheets Execution Exception raised: {e}")
-
-
-# --- 4. INTERACTIVE PAGE: LIVE EXECUTIVE DASHBOARD ---
-elif st.session_state["page"] == "Dashboard":
-    st.title("📊 OAF Nursery Production Analytics")
-    st.markdown("Live management intelligence metrics computed directly from target spreadsheet records.")
-    st.divider()
-
-    with st.spinner("Streaming analytical indexes from remote storage..."):
-        try:
-            # Bypass cache (ttl=0) to force a fresh data sync on every load
-            df = conn.read(worksheet="Sheet1", ttl=0).dropna(how="all")
-        except Exception:
-            df = pd.DataFrame()
-
-    if df.empty:
-        st.warning("⚠️ No database metrics located in 'Sheet1'. Submit form registrations to display analytics.")
-    else:
-        # Cast critical text-based table elements back to high-fidelity numbers safely
-        for col in ["guava_beds", "gesho_beds", "lemon_beds", "grevillea_beds"]:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-        # Aggregate total calculation metrics across rows
-        total_nurseries = len(df)
-        sum_guava = int(df["guava_beds"].sum())
-        sum_gesho = int(df["gesho_beds"].sum())
-        sum_lemon = int(df["lemon_beds"].sum())
-        sum_grevillea = int(df["grevillea_beds"].sum())
-        total_beds = sum_guava + sum_gesho + sum_lemon + sum_grevillea
-        
-        # Display KPI banner cards
-        kpi1, kpi2, kpi3 = st.columns(3)
-        kpi1.metric("🚜 Monitored Locations", f"{total_nurseries}")
-        kpi2.metric("🌱 Total Active Beds", f"{total_beds:,}")
-        kpi3.metric("📊 Mean Bed Capacity/Site", f"{round(total_beds/total_nurseries, 1) if total_nurseries > 0 else 0}")
-        
-        st.divider()
-
-        # Operational interactive filtering elements
-        st.markdown("### 🔍 Filter Controls")
-        sel_woreda = st.multiselect("Isolate targeted Woredas / ወረዳዎች:", options=df["woreda"].unique(), default=df["woreda"].unique())
-        filtered_df = df[df["woreda"].isin(sel_woreda)]
-
-        st.divider()
-
-        # Render data visualization elements
-        ch1, ch2 = st.columns(2)
-        
-        with ch1:
-            st.markdown("#### Crop Distribution Metrics (Total Beds)")
-            species_totals = pd.DataFrame({
-                "Species": ["Guava", "Gesho", "Lemon", "Grevillea"],
-                "Total Beds": [
-                    filtered_df["guava_beds"].sum(), 
-                    filtered_df["gesho_beds"].sum(), 
-                    filtered_df["lemon_beds"].sum(), 
-                    filtered_df["grevillea_beds"].sum()
-                ]
-            })
-            fig_bar = px.bar(species_totals, x="Species", y="Total Beds", color="Species", text_auto=True, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig_bar, use_container_width=True)
-            
-        with ch2:
-            st.markdown("#### Asset Integrity Status (Fencing Ratio)")
-            fence_counts = filtered_df["is_fenced"].value_counts().reset_index()
-            fence_counts.columns = ["Fenced Status", "Count"]
-            fig_pie = px.pie(fence_counts, values="Count", names="Fenced Status", hole=0.4, color_discrete_sequence=["#2ecc71", "#e74c3c"])
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        st.divider()
-        st.markdown("#### 📁 Active Data Ledger Summary")
-        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+                    st.error(f"GSheets Execution Exception
