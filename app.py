@@ -115,7 +115,7 @@ elif st.session_state["page"] == "Dashboard":
             df = pd.DataFrame()
 
     if df.empty:
-        st.warning("⚠️ No database metrics located in 'Sheet1'. Submit form registrations to display analytics.")
+        st.warning("⚠️ No database metrics located in 'conn.update(worksheet="Sheet1", data=updated_df)'. Submit form registrations to display analytics.")
     else:
         # Cast critical text-based table elements back to high-fidelity numbers safely
         for col in ["guava_beds", "gesho_beds", "lemon_beds", "grevillea_beds"]:
