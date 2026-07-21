@@ -1,68 +1,175 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from streamlit_gsheets import GSheetsConnection
+import os
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="OAF Nursery Analytics", layout="wide", page_icon="🌳")
 
-# --- GOOGLE SHEETS CONNECTION ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-st.title("📊 OAF Nursery Production Analytics")
-st.markdown("Live management intelligence metrics from Google Sheets.")
-st.divider()
-
-# --- LOAD DATA ---
-with st.spinner("Loading data from Google Sheets..."):
+# --- LOAD DATA: Try Google Sheet first, fallback to local ---
+@st.cache_data(ttl=300)
+def load_data():
+    """Try to load from Google Sheets, fallback to local CSV if fails"""
+    
+    # Try Google Sheets first
     try:
-        df = conn.read(worksheet="Sheet1", ttl=0).dropna(how="all")
-        st.success(f"✅ Loaded {len(df)} rows successfully!")
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df = conn.read(worksheet="Sheet1", ttl=0)
+        st.sidebar.success("✅ Connected to Google Sheets")
+        return df, "google_sheets"
     except Exception as e:
-        st.error(f"❌ Failed to load data: {e}")
-        st.info("Make sure: (1) Google Sheets API is enabled, (2) Sheet is shared with Service Account as Editor, (3) secrets.toml is correct")
-        st.stop()
+        st.sidebar.warning(f"⚠️ Google Sheets failed: {str(e)[:80]}...")
+        
+        # Fallback: Look for local data file
+        try:
+            # Try to find the data file in common locations
+            possible_paths = [
+                "nursery_data.csv",
+                "data.csv",
+                "sheet_data.csv",
+                os.path.join(os.path.dirname(__file__), "nursery_data.csv"),
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    df = pd.read_csv(path)
+                    st.sidebar.info(f"📁 Loaded from local file: {path}")
+                    return df, "local"
+            
+            # If no file found, create sample dataframe with correct columns
+            st.sidebar.error("❌ No data source found!")
+            st.sidebar.info("Please either:\n1. Fix Google Sheets connection, or\n2. Save your data as 'nursery_data.csv' in the app folder")
+            
+            # Return empty dataframe with expected columns
+            return pd.DataFrame(), "none"
+            
+        except Exception as e2:
+            st.sidebar.error(f"❌ Local file also failed: {str(e2)[:80]}")
+            return pd.DataFrame(), "none"
 
-# --- EMPTY STATE ---
+# --- SIDEBAR ---
+st.sidebar.title("🌳 OAF System Menu")
+st.sidebar.markdown("Nursery Count Analytics Dashboard")
+
+# Load data
+with st.spinner("Loading data..."):
+    df, source = load_data()
+
+# Show data source info
+if source == "google_sheets":
+    st.sidebar.success("📡 Live data from Google Sheets")
+elif source == "local":
+    st.sidebar.info("📁 Using local data file")
+else:
+    st.sidebar.error("⚠️ No data loaded!")
+
+st.sidebar.divider()
+
+# --- MAIN DASHBOARD ---
+st.title("📊 OAF Nursery Production Analytics")
+st.markdown("Live management intelligence metrics from field count data.")
+
 if df.empty:
-    st.warning("⚠️ No data found in 'Sheet1'. The sheet exists but has no rows.")
+    st.error("""
+    ❌ **No data available!**
+    
+    To fix this, you need to:
+    
+    **Option 1: Fix Google Sheets Connection**
+    - Make sure `.streamlit/secrets.toml` is configured
+    - Share your Google Sheet with: `oaf-nursery-project@helpful-monitor-482107-h6.iam.gserviceaccount.com`
+    - Enable Google Sheets API in Google Cloud Console
+    
+    **Option 2: Use Local Data**
+    - Save your data as `nursery_data.csv` in the same folder as `app.py`
+    """)
     st.stop()
 
 # --- DATA CLEANING ---
-numeric_cols = ["guava_beds", "gesho_beds", "lemon_beds", "grevillea_beds"]
-for col in numeric_cols:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+# Clean column names
+df.columns = df.columns.str.strip()
 
-# --- KPI METRICS ---
-total_nurseries = len(df)
-sum_guava = int(df["guava_beds"].sum()) if "guava_beds" in df.columns else 0
-sum_gesho = int(df["gesho_beds"].sum()) if "gesho_beds" in df.columns else 0
-sum_lemon = int(df["lemon_beds"].sum()) if "lemon_beds" in df.columns else 0
-sum_grevillea = int(df["grevillea_beds"].sum()) if "grevillea_beds" in df.columns else 0
-total_beds = sum_guava + sum_gesho + sum_lemon + sum_grevillea
+# Identify species columns (Ready counts)
+species_ready_cols = [
+    'Gesho Count Ready', 'Grevillea Count Ready', 'Decurrens Count Ready',
+    'Wanza Count Ready', 'Papaya Count Ready', 'Moringa Count Ready',
+    'Coffee Count Ready', 'Guava Count Ready', 'Lemon Count Ready',
+    'Arzelibano Count Ready', 'Neem Count Ready'
+]
 
-kpi1, kpi2, kpi3 = st.columns(3)
-kpi1.metric("🚜 Monitored Locations", f"{total_nurseries}")
-kpi2.metric("🌱 Total Active Beds", f"{total_beds:,}")
-kpi3.metric("📊 Mean Bed Capacity/Site", f"{round(total_beds/total_nurseries, 1) if total_nurseries > 0 else 0}")
-
-st.divider()
+# Clean numeric columns - remove commas and convert
+for col in df.columns:
+    if df[col].dtype == object:
+        # Try to clean commas from numbers
+        try:
+            df[col] = df[col].astype(str).str.replace(',', '').replace('nan', pd.NA)
+            df[col] = pd.to_numeric(df[col], errors='ignore')
+        except:
+            pass
 
 # --- FILTERS ---
 st.markdown("### 🔍 Filter Controls")
 
-# Woreda filter
-if "woreda" in df.columns:
-    sel_woreda = st.multiselect(
-        "Isolate targeted Woredas / ወረዳዎች:", 
-        options=sorted(df["woreda"].dropna().unique()), 
-        default=sorted(df["woreda"].dropna().unique())
-    )
-    filtered_df = df[df["woreda"].isin(sel_woreda)] if sel_woreda else df.iloc[0:0]
-else:
-    st.warning("No 'woreda' column found in data.")
-    filtered_df = df
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if 'Zone' in df.columns:
+        zones = sorted(df['Zone'].dropna().unique())
+        sel_zones = st.multiselect("Zone:", zones, default=zones)
+    else:
+        sel_zones = []
+        st.warning("No 'Zone' column")
+
+with col2:
+    if 'Woreda' in df.columns:
+        woredas = sorted(df['Woreda'].dropna().unique())
+        sel_woredas = st.multiselect("Woreda:", woredas, default=woredas)
+    else:
+        sel_woredas = []
+        st.warning("No 'Woreda' column")
+
+with col3:
+    if 'Cluster' in df.columns:
+        clusters = sorted(df['Cluster'].dropna().unique())
+        sel_clusters = st.multiselect("Cluster:", clusters, default=clusters)
+    else:
+        sel_clusters = []
+        st.warning("No 'Cluster' column")
+
+# Apply filters
+filtered_df = df.copy()
+if sel_zones and 'Zone' in df.columns:
+    filtered_df = filtered_df[filtered_df['Zone'].isin(sel_zones)]
+if sel_woredas and 'Woreda' in df.columns:
+    filtered_df = filtered_df[filtered_df['Woreda'].isin(sel_woredas)]
+if sel_clusters and 'Cluster' in df.columns:
+    filtered_df = filtered_df[filtered_df['Cluster'].isin(sel_clusters)]
+
+st.divider()
+
+# --- KPI METRICS ---
+st.markdown("### 📈 Key Performance Indicators")
+
+# Calculate totals
+total_kebeles = len(filtered_df)
+
+# Species totals
+species_summary = {}
+for species in ['Gesho', 'Grevillea', 'Decurrens', 'Wanza', 'Papaya', 
+                'Moringa', 'Coffee', 'Guava', 'Lemon', 'Arzelibano', 'Neem']:
+    ready_col = f'{species} Count Ready'
+    if ready_col in filtered_df.columns:
+        species_summary[species] = filtered_df[ready_col].sum()
+
+total_ready = sum(species_summary.values())
+
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+kpi1.metric("🏘️ Kebeles", f"{total_kebeles}")
+kpi2.metric("🌱 Total Ready Seedlings", f"{total_ready:,.0f}")
+kpi3.metric("📊 Avg Ready/Kebele", f"{total_ready/total_kebeles:,.0f}" if total_kebeles > 0 else "0")
+kpi4.metric("📍 Woredas", f"{filtered_df['Woreda'].nunique()}" if 'Woreda' in filtered_df.columns else "N/A")
 
 st.divider()
 
@@ -73,46 +180,73 @@ else:
     ch1, ch2 = st.columns(2)
     
     with ch1:
-        st.markdown("#### Crop Distribution Metrics (Total Beds)")
-        species_data = {
-            "Species": ["Guava", "Gesho", "Lemon", "Grevillea"],
-            "Total Beds": [
-                int(filtered_df["guava_beds"].sum()) if "guava_beds" in filtered_df.columns else 0,
-                int(filtered_df["gesho_beds"].sum()) if "gesho_beds" in filtered_df.columns else 0,
-                int(filtered_df["lemon_beds"].sum()) if "lemon_beds" in filtered_df.columns else 0,
-                int(filtered_df["grevillea_beds"].sum()) if "grevillea_beds" in filtered_df.columns else 0,
-            ]
-        }
-        species_totals = pd.DataFrame(species_data)
-        fig_bar = px.bar(
-            species_totals, 
-            x="Species", 
-            y="Total Beds", 
-            color="Species", 
-            text_auto=True, 
-            color_discrete_sequence=px.colors.qualitative.Pastel
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-        
-    with ch2:
-        st.markdown("#### Asset Integrity Status (Fencing Ratio)")
-        if "is_fenced" in filtered_df.columns:
-            fence_counts = filtered_df["is_fenced"].value_counts().reset_index()
-            if not fence_counts.empty:
-                fence_counts.columns = ["Fenced Status", "Count"]
-                fig_pie = px.pie(
-                    fence_counts, 
-                    values="Count", 
-                    names="Fenced Status", 
-                    hole=0.4, 
-                    color_discrete_sequence=["#2ecc71", "#e74c3c"]
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-            else:
-                st.info("No fencing data available.")
+        st.markdown("#### 🌿 Species Distribution (Ready Count)")
+        if species_summary:
+            species_df = pd.DataFrame({
+                "Species": list(species_summary.keys()),
+                "Ready Count": list(species_summary.values())
+            }).sort_values("Ready Count", ascending=True)
+            
+            fig_bar = px.bar(
+                species_df, 
+                y="Species", 
+                x="Ready Count", 
+                orientation='h',
+                color="Species",
+                text_auto=True,
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            fig_bar.update_layout(showlegend=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
         else:
-            st.info("No 'is_fenced' column found.")
+            st.info("No species data found")
+    
+    with ch2:
+        st.markdown("#### 🥧 Species Proportion")
+        if species_summary:
+            species_df = pd.DataFrame({
+                "Species": list(species_summary.keys()),
+                "Ready Count": list(species_summary.values())
+            })
+            fig_pie = px.pie(
+                species_df,
+                values="Ready Count",
+                names="Species",
+                hole=0.4,
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("No species data found")
 
     st.divider()
-    st.markdown("#### 📁 Active Data Ledger Summary")
+    
+    # Zone/Woreda breakdown
+    st.markdown("#### 📍 Ready Seedlings by Zone & Woreda")
+    if 'Zone' in filtered_df.columns and 'Woreda' in filtered_df.columns:
+        zone_woreda = filtered_df.groupby(['Zone', 'Woreda']).size().reset_index(name='Kebele Count')
+        fig_sunburst = px.sunburst(
+            filtered_df,
+            path=['Zone', 'Woreda', 'Kebele'],
+            values='Gesho Count Ready' if 'Gesho Count Ready' in filtered_df.columns else None,
+            color='Zone'
+        )
+        st.plotly_chart(fig_sunburst, use_container_width=True)
+    
+    st.divider()
+    
+    # Data table
+    st.markdown("#### 📁 Full Data Ledger")
     st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    
+    # Download button
+    csv = filtered_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        "⬇️ Download Filtered Data as CSV",
+        csv,
+        "nursery_filtered_data.csv",
+        "text/csv"
+    )
+
+st.sidebar.divider()
+st.sidebar.caption("OAF Nursery Management System")
