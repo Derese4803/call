@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import gspread
 from google.oauth2.service_account import Credentials
+import os
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="OAF Nursery Analytics", layout="wide", page_icon="🌳")
@@ -64,12 +65,20 @@ def load_sheet_data():
         data = all_values[1:]
         df = pd.DataFrame(data, columns=unique_headers)
         
-        # Convert numeric columns
+        # Convert numeric columns - remove commas
         for col in df.columns:
             df[col] = df[col].astype(str).str.replace(',', '').replace('nan', pd.NA)
             df[col] = pd.to_numeric(df[col], errors='ignore')
         
         return df, True
+        
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("❌ Spreadsheet not found. Check the URL in secrets.toml")
+        return pd.DataFrame(), False
+        
+    except gspread.exceptions.APIError as e:
+        st.error(f"❌ Google API Error: {e}")
+        return pd.DataFrame(), False
         
     except Exception as e:
         st.error(f"❌ Error reading sheet: {e}")
@@ -80,9 +89,19 @@ with st.spinner("Connecting to Google Sheets..."):
     df, success = load_sheet_data()
 
 if not success:
-    st.error("❌ Failed to load data from Google Sheets.")
+    st.error("""
+    ❌ **Failed to load data from Google Sheets!**
+    
+    **Please check:**
+    1. Google Sheets API is enabled
+    2. Google Drive API is enabled  
+    3. Sheet is shared with Service Account as EDITOR
+    4. secrets.toml has correct credentials (new key, not exposed one)
+    5. `gspread` is installed: `pip install gspread google-auth`
+    """)
     st.stop()
 
+# Show success
 st.success(f"✅ Connected! Loaded {len(df)} rows and {len(df.columns)} columns")
 
 # --- SIDEBAR ---
@@ -91,11 +110,8 @@ st.sidebar.success("📡 Live data from Google Sheets")
 st.sidebar.divider()
 
 # --- DATA CLEANING ---
-# Map duplicate columns back to original names for analysis
-column_mapping = {
-    'Decurrens Count Ready_1': 'Decurrens Count Ready 2',
-    'QC Gesho_1': 'QC Gesho 2'
-}
+# Clean column names
+df.columns = df.columns.str.strip()
 
 # --- FILTERS ---
 st.markdown("### 🔍 Filter Controls")
@@ -108,6 +124,7 @@ with col1:
         sel_zones = st.multiselect("Zone:", zones, default=zones)
     else:
         sel_zones = []
+        st.warning("No 'Zone' column")
 
 with col2:
     if 'Woreda' in df.columns:
@@ -115,6 +132,7 @@ with col2:
         sel_woredas = st.multiselect("Woreda:", woredas, default=woredas)
     else:
         sel_woredas = []
+        st.warning("No 'Woreda' column")
 
 with col3:
     if 'Cluster' in df.columns:
@@ -122,6 +140,7 @@ with col3:
         sel_clusters = st.multiselect("Cluster:", clusters, default=clusters)
     else:
         sel_clusters = []
+        st.warning("No 'Cluster' column")
 
 # Apply filters
 filtered_df = df.copy()
@@ -184,6 +203,8 @@ else:
             )
             fig_bar.update_layout(showlegend=False)
             st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("No species data found")
     
     with ch2:
         st.markdown("#### 🥧 Species Proportion")
@@ -200,7 +221,25 @@ else:
                 color_discrete_sequence=px.colors.qualitative.Pastel
             )
             st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("No species data found")
 
+    st.divider()
+    
+    # Zone/Woreda breakdown
+    st.markdown("#### 📍 Ready Seedlings by Zone & Woreda")
+    if 'Zone' in filtered_df.columns and 'Woreda' in filtered_df.columns:
+        try:
+            fig_sunburst = px.sunburst(
+                filtered_df,
+                path=['Zone', 'Woreda', 'Kebele'],
+                values='Gesho Count Ready' if 'Gesho Count Ready' in filtered_df.columns else None,
+                color='Zone'
+            )
+            st.plotly_chart(fig_sunburst, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not create sunburst chart: {e}")
+    
     st.divider()
     
     # Data table
