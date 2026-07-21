@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import gspread
 from google.oauth2.service_account import Credentials
-import json
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="OAF Nursery Analytics", layout="wide", page_icon="🌳")
@@ -16,10 +15,7 @@ st.markdown("Live management intelligence metrics from Google Sheets.")
 def get_gsheet_client():
     """Connect to Google Sheets using gspread with Service Account"""
     try:
-        # Load credentials from secrets.toml
         creds_info = dict(st.secrets["connections"]["gsheets"]["credentials"])
-        
-        # Create credentials object
         creds = Credentials.from_service_account_info(
             creds_info,
             scopes=[
@@ -27,46 +23,53 @@ def get_gsheet_client():
                 "https://www.googleapis.com/auth/drive"
             ]
         )
-        
-        # Authorize gspread
         client = gspread.authorize(creds)
         return client
-        
     except Exception as e:
         st.error(f"❌ Authentication failed: {e}")
         return None
 
 @st.cache_data(ttl=300)
 def load_sheet_data():
-    """Load data from Google Sheet"""
+    """Load data from Google Sheet - handle duplicate headers"""
     client = get_gsheet_client()
     
     if client is None:
         return pd.DataFrame(), False
     
     try:
-        # Open sheet by URL
         sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         spreadsheet = client.open_by_url(sheet_url)
-        
-        # Get first worksheet
         worksheet = spreadsheet.sheet1
         
-        # Get all records
-        data = worksheet.get_all_records()
+        # Get raw values (not records) to handle duplicate headers
+        all_values = worksheet.get_all_values()
         
-        df = pd.DataFrame(data)
+        # First row is headers
+        headers = all_values[0]
+        
+        # Make headers unique by adding suffix to duplicates
+        seen = {}
+        unique_headers = []
+        for h in headers:
+            h = h.strip()
+            if h in seen:
+                seen[h] += 1
+                unique_headers.append(f"{h}_{seen[h]}")
+            else:
+                seen[h] = 0
+                unique_headers.append(h)
+        
+        # Create DataFrame from remaining rows
+        data = all_values[1:]
+        df = pd.DataFrame(data, columns=unique_headers)
+        
+        # Convert numeric columns
+        for col in df.columns:
+            df[col] = df[col].astype(str).str.replace(',', '').replace('nan', pd.NA)
+            df[col] = pd.to_numeric(df[col], errors='ignore')
         
         return df, True
-        
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.error("❌ Spreadsheet not found. Check the URL in secrets.toml")
-        return pd.DataFrame(), False
-        
-    except gspread.exceptions.APIError as e:
-        st.error(f"❌ Google API Error: {e}")
-        st.info("Make sure the sheet is shared with the Service Account email as EDITOR")
-        return pd.DataFrame(), False
         
     except Exception as e:
         st.error(f"❌ Error reading sheet: {e}")
@@ -77,47 +80,22 @@ with st.spinner("Connecting to Google Sheets..."):
     df, success = load_sheet_data()
 
 if not success:
-    st.error("""
-    ❌ **Failed to connect to Google Sheets!**
-    
-    **Required fixes:**
-    
-    1. **Enable APIs** in Google Cloud Console:
-       - Google Sheets API
-       - Google Drive API
-    
-    2. **Share your sheet** with Service Account email as **EDITOR**
-    
-    3. **Verify secrets.toml** has correct credentials
-    
-    4. **Install required package:**
-       ```bash
-       pip install gspread
-       ```
-    """)
+    st.error("❌ Failed to load data from Google Sheets.")
     st.stop()
 
-# Show success
 st.success(f"✅ Connected! Loaded {len(df)} rows and {len(df.columns)} columns")
 
 # --- SIDEBAR ---
 st.sidebar.title("🌳 OAF System Menu")
-st.sidebar.markdown("Nursery Count Analytics Dashboard")
 st.sidebar.success("📡 Live data from Google Sheets")
 st.sidebar.divider()
 
 # --- DATA CLEANING ---
-# Clean column names
-df.columns = df.columns.str.strip()
-
-# Convert numeric columns - remove commas
-for col in df.columns:
-    if df[col].dtype == object:
-        try:
-            df[col] = df[col].astype(str).str.replace(',', '').replace('nan', pd.NA)
-            df[col] = pd.to_numeric(df[col], errors='ignore')
-        except:
-            pass
+# Map duplicate columns back to original names for analysis
+column_mapping = {
+    'Decurrens Count Ready_1': 'Decurrens Count Ready 2',
+    'QC Gesho_1': 'QC Gesho 2'
+}
 
 # --- FILTERS ---
 st.markdown("### 🔍 Filter Controls")
@@ -130,7 +108,6 @@ with col1:
         sel_zones = st.multiselect("Zone:", zones, default=zones)
     else:
         sel_zones = []
-        st.warning("No 'Zone' column")
 
 with col2:
     if 'Woreda' in df.columns:
@@ -138,7 +115,6 @@ with col2:
         sel_woredas = st.multiselect("Woreda:", woredas, default=woredas)
     else:
         sel_woredas = []
-        st.warning("No 'Woreda' column")
 
 with col3:
     if 'Cluster' in df.columns:
@@ -146,7 +122,6 @@ with col3:
         sel_clusters = st.multiselect("Cluster:", clusters, default=clusters)
     else:
         sel_clusters = []
-        st.warning("No 'Cluster' column")
 
 # Apply filters
 filtered_df = df.copy()
@@ -209,8 +184,6 @@ else:
             )
             fig_bar.update_layout(showlegend=False)
             st.plotly_chart(fig_bar, use_container_width=True)
-        else:
-            st.info("No species data found")
     
     with ch2:
         st.markdown("#### 🥧 Species Proportion")
@@ -227,23 +200,7 @@ else:
                 color_discrete_sequence=px.colors.qualitative.Pastel
             )
             st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.info("No species data found")
 
-    st.divider()
-    
-    # Zone/Woreda breakdown
-    st.markdown("#### 📍 Ready Seedlings by Zone & Woreda")
-    if 'Zone' in filtered_df.columns and 'Woreda' in filtered_df.columns:
-        zone_woreda = filtered_df.groupby(['Zone', 'Woreda']).size().reset_index(name='Kebele Count')
-        fig_sunburst = px.sunburst(
-            filtered_df,
-            path=['Zone', 'Woreda', 'Kebele'],
-            values='Gesho Count Ready' if 'Gesho Count Ready' in filtered_df.columns else None,
-            color='Zone'
-        )
-        st.plotly_chart(fig_sunburst, use_container_width=True)
-    
     st.divider()
     
     # Data table
