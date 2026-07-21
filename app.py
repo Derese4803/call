@@ -1,108 +1,118 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from streamlit_gsheets import GSheetsConnection
-import os
+import gspread
+from google.oauth2.service_account import Credentials
+import json
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="OAF Nursery Analytics", layout="wide", page_icon="🌳")
 
-# --- LOAD DATA: Try Google Sheet first, fallback to local ---
-@st.cache_data(ttl=300)
-def load_data():
-    """Try to load from Google Sheets, fallback to local CSV if fails"""
-    
-    # Try Google Sheets first
+st.title("📊 OAF Nursery Production Analytics")
+st.markdown("Live management intelligence metrics from Google Sheets.")
+
+# --- GOOGLE SHEETS CONNECTION ---
+@st.cache_resource
+def get_gsheet_client():
+    """Connect to Google Sheets using gspread with Service Account"""
     try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        df = conn.read(worksheet="Sheet1", ttl=0)
-        st.sidebar.success("✅ Connected to Google Sheets")
-        return df, "google_sheets"
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Google Sheets failed: {str(e)[:80]}...")
+        # Load credentials from secrets.toml
+        creds_info = dict(st.secrets["connections"]["gsheets"]["credentials"])
         
-        # Fallback: Look for local data file
-        try:
-            # Try to find the data file in common locations
-            possible_paths = [
-                "nursery_data.csv",
-                "data.csv",
-                "sheet_data.csv",
-                os.path.join(os.path.dirname(__file__), "nursery_data.csv"),
+        # Create credentials object
+        creds = Credentials.from_service_account_info(
+            creds_info,
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
             ]
-            
-            for path in possible_paths:
-                if os.path.exists(path):
-                    df = pd.read_csv(path)
-                    st.sidebar.info(f"📁 Loaded from local file: {path}")
-                    return df, "local"
-            
-            # If no file found, create sample dataframe with correct columns
-            st.sidebar.error("❌ No data source found!")
-            st.sidebar.info("Please either:\n1. Fix Google Sheets connection, or\n2. Save your data as 'nursery_data.csv' in the app folder")
-            
-            # Return empty dataframe with expected columns
-            return pd.DataFrame(), "none"
-            
-        except Exception as e2:
-            st.sidebar.error(f"❌ Local file also failed: {str(e2)[:80]}")
-            return pd.DataFrame(), "none"
+        )
+        
+        # Authorize gspread
+        client = gspread.authorize(creds)
+        return client
+        
+    except Exception as e:
+        st.error(f"❌ Authentication failed: {e}")
+        return None
+
+@st.cache_data(ttl=300)
+def load_sheet_data():
+    """Load data from Google Sheet"""
+    client = get_gsheet_client()
+    
+    if client is None:
+        return pd.DataFrame(), False
+    
+    try:
+        # Open sheet by URL
+        sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        spreadsheet = client.open_by_url(sheet_url)
+        
+        # Get first worksheet
+        worksheet = spreadsheet.sheet1
+        
+        # Get all records
+        data = worksheet.get_all_records()
+        
+        df = pd.DataFrame(data)
+        
+        return df, True
+        
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("❌ Spreadsheet not found. Check the URL in secrets.toml")
+        return pd.DataFrame(), False
+        
+    except gspread.exceptions.APIError as e:
+        st.error(f"❌ Google API Error: {e}")
+        st.info("Make sure the sheet is shared with the Service Account email as EDITOR")
+        return pd.DataFrame(), False
+        
+    except Exception as e:
+        st.error(f"❌ Error reading sheet: {e}")
+        return pd.DataFrame(), False
+
+# --- LOAD DATA ---
+with st.spinner("Connecting to Google Sheets..."):
+    df, success = load_sheet_data()
+
+if not success:
+    st.error("""
+    ❌ **Failed to connect to Google Sheets!**
+    
+    **Required fixes:**
+    
+    1. **Enable APIs** in Google Cloud Console:
+       - Google Sheets API
+       - Google Drive API
+    
+    2. **Share your sheet** with Service Account email as **EDITOR**
+    
+    3. **Verify secrets.toml** has correct credentials
+    
+    4. **Install required package:**
+       ```bash
+       pip install gspread
+       ```
+    """)
+    st.stop()
+
+# Show success
+st.success(f"✅ Connected! Loaded {len(df)} rows and {len(df.columns)} columns")
 
 # --- SIDEBAR ---
 st.sidebar.title("🌳 OAF System Menu")
 st.sidebar.markdown("Nursery Count Analytics Dashboard")
-
-# Load data
-with st.spinner("Loading data..."):
-    df, source = load_data()
-
-# Show data source info
-if source == "google_sheets":
-    st.sidebar.success("📡 Live data from Google Sheets")
-elif source == "local":
-    st.sidebar.info("📁 Using local data file")
-else:
-    st.sidebar.error("⚠️ No data loaded!")
-
+st.sidebar.success("📡 Live data from Google Sheets")
 st.sidebar.divider()
-
-# --- MAIN DASHBOARD ---
-st.title("📊 OAF Nursery Production Analytics")
-st.markdown("Live management intelligence metrics from field count data.")
-
-if df.empty:
-    st.error("""
-    ❌ **No data available!**
-    
-    To fix this, you need to:
-    
-    **Option 1: Fix Google Sheets Connection**
-    - Make sure `.streamlit/secrets.toml` is configured
-    - Share your Google Sheet with: `oaf-nursery-project@helpful-monitor-482107-h6.iam.gserviceaccount.com`
-    - Enable Google Sheets API in Google Cloud Console
-    
-    **Option 2: Use Local Data**
-    - Save your data as `nursery_data.csv` in the same folder as `app.py`
-    """)
-    st.stop()
 
 # --- DATA CLEANING ---
 # Clean column names
 df.columns = df.columns.str.strip()
 
-# Identify species columns (Ready counts)
-species_ready_cols = [
-    'Gesho Count Ready', 'Grevillea Count Ready', 'Decurrens Count Ready',
-    'Wanza Count Ready', 'Papaya Count Ready', 'Moringa Count Ready',
-    'Coffee Count Ready', 'Guava Count Ready', 'Lemon Count Ready',
-    'Arzelibano Count Ready', 'Neem Count Ready'
-]
-
-# Clean numeric columns - remove commas and convert
+# Convert numeric columns - remove commas
 for col in df.columns:
     if df[col].dtype == object:
-        # Try to clean commas from numbers
         try:
             df[col] = df[col].astype(str).str.replace(',', '').replace('nan', pd.NA)
             df[col] = pd.to_numeric(df[col], errors='ignore')
@@ -152,13 +162,14 @@ st.divider()
 # --- KPI METRICS ---
 st.markdown("### 📈 Key Performance Indicators")
 
-# Calculate totals
 total_kebeles = len(filtered_df)
 
 # Species totals
+species_list = ['Gesho', 'Grevillea', 'Decurrens', 'Wanza', 'Papaya', 
+                'Moringa', 'Coffee', 'Guava', 'Lemon', 'Arzelibano', 'Neem']
+
 species_summary = {}
-for species in ['Gesho', 'Grevillea', 'Decurrens', 'Wanza', 'Papaya', 
-                'Moringa', 'Coffee', 'Guava', 'Lemon', 'Arzelibano', 'Neem']:
+for species in species_list:
     ready_col = f'{species} Count Ready'
     if ready_col in filtered_df.columns:
         species_summary[species] = filtered_df[ready_col].sum()
