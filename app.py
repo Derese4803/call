@@ -1,23 +1,22 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import re
 import plotly.express as px
 from streamlit_gsheets import GSheetsConnection
 
 # --- 1. INITIAL SYSTEM SETUP ---
-# Configure layout to wide mode for the dashboard grid system
 st.set_page_config(page_title="OAF Nursery Management Portal", layout="wide", page_icon="🌳")
 
-# FIX: Added gcloud="gcs" to explicitly enable authenticated cloud writing rules
-conn = st.connection("gsheets", type=GSheetsConnection, gcloud="gcs")
+# Initialize Google Sheets connection (standard syntax)
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Simple state manager to handle sidebar page routing
+# Simple state manager for sidebar page routing
 if "page" not in st.session_state: 
     st.session_state["page"] = "Form"
 
 def navigate_to(page_name):
     st.session_state["page"] = page_name
-    st.rerun()
 
 # --- 2. SIDEBAR MULTI-PAGE NAVIGATION ---
 st.sidebar.title("OAF System Menu 🌳")
@@ -25,9 +24,11 @@ st.sidebar.markdown("Navigate through registration and reporting windows.")
 
 if st.sidebar.button("📝 Farmer Registration Form", use_container_width=True): 
     navigate_to("Form")
+    st.rerun()
     
 if st.sidebar.button("📊 Live Analytics Dashboard", use_container_width=True): 
     navigate_to("Dashboard")
+    st.rerun()
 
 st.sidebar.divider()
 st.sidebar.caption("Connected to Google Cloud Platform via secure Service Account Protocol.")
@@ -51,7 +52,7 @@ if st.session_state["page"] == "Form":
         c1, c2, c3 = st.columns(3)
         fa_name = c1.text_input("FA Name / የFA ስም").strip()
         cbe_account = c2.text_input("CBE Account / የባንክ ሂሳብ").strip()
-        phone_number = c3.text_input("Phone Number / ስልክ ቁጥር").strip()
+        phone_number = c3.text_input("Phone Number / ስልክ ቁጥር", placeholder="e.g., 0912345678").strip()
         
         fenced = st.radio("Is it Fenced? / አጥር አለው?", ["Yes / አለው", "No / የለውም"], horizontal=True)
         
@@ -64,42 +65,66 @@ if st.session_state["page"] == "Form":
         gr_b = col_gr.number_input("Grevillea Beds / ግራቪሊያ", min_value=0, step=1)
         
         st.divider()
-        rem = st.text_area("Field Operational Remarks / አስተያየት")
+        rem = st.text_area("Field Operational Remarks / አስተያየት").strip()
         
         submit = st.form_submit_button("Submit Data / መረጃውን መዝግብ")
 
     if submit:
-        if not woreda or not kebele or not tno_name:
-            st.error("❌ Crucial verification failure: Woreda, Kebele, and TNO Name inputs are mandatory!")
+        # Validation checks
+        errors = []
+        if not woreda:
+            errors.append("Woreda / ወረዳ is required.")
+        if not kebele:
+            errors.append("Kebele / ቀበሌ is required.")
+        if not tno_name:
+            errors.append("TNO Name / የTNO ስም is required.")
+        
+        # Ethiopian phone number validation (starts with 09 or +251, 10 digits)
+        if phone_number and not re.match(r'^(09\d{8}|\+251\d{9})$', phone_number):
+            errors.append("Phone number must be a valid Ethiopian number (e.g., 0912345678 or +251912345678).")
+        
+        # CBE account validation (numeric, typically 13-16 digits)
+        if cbe_account and not re.match(r'^\d{13,16}$', cbe_account):
+            errors.append("CBE Account must be 13-16 digits.")
+        
+        if errors:
+            for error in errors:
+                st.error(f"❌ {error}")
         else:
             with st.spinner("Pushing operational records directly to cloud databases..."):
                 try:
-                    # Sync with current spreadsheet data to find target append boundaries
+                    # Read existing data
                     try:
                         existing_df = conn.read(worksheet="Sheet1", ttl=0).dropna(how="all")
                     except Exception:
                         existing_df = pd.DataFrame()
 
-                    # Format the UI information into a structured data frame row matching database tables
+                    # Prepare new row
                     new_row = {
-                        'woreda': woreda, 'kebele': kebele, 'tno_name': tno_name,
-                        'fa_name': fa_name, 'cbe_account': cbe_account, 'phone_number': phone_number, 
-                        'is_fenced': fenced, 'guava_beds': g_b, 'gesho_beds': ge_b, 
-                        'lemon_beds': l_b, 'grevillea_beds': gr_b, 'general_remark': rem, 
+                        'woreda': woreda, 
+                        'kebele': kebele, 
+                        'tno_name': tno_name,
+                        'fa_name': fa_name, 
+                        'cbe_account': cbe_account, 
+                        'phone_number': phone_number, 
+                        'is_fenced': fenced, 
+                        'guava_beds': int(g_b), 
+                        'gesho_beds': int(ge_b), 
+                        'lemon_beds': int(l_b), 
+                        'grevillea_beds': int(gr_b), 
+                        'general_remark': rem, 
                         'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
 
-                    # Append data structure downstream
+                    # Append new data
                     updated_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
                     
-                    # Overwrite/push straight back to target worksheet endpoint using the correct .update() method
-                    conn.update(worksheet="Sheet1", data=updated_df)
-                    
-                    # Clear internal cache so dashboard registers fresh entries instantly
-                    st.cache_data.clear()
+                    # ✅ FIXED: Use .create() instead of .update()
+                    conn.create(worksheet="Sheet1", data=updated_df)
                     
                     st.success("✅ Transaction complete. Row verified and saved to Google Sheets.")
                     st.balloons()
+                    
                 except Exception as e:
                     st.error(f"GSheets Execution Exception raised: {e}")
 
@@ -112,7 +137,6 @@ elif st.session_state["page"] == "Dashboard":
 
     with st.spinner("Streaming analytical indexes from remote storage..."):
         try:
-            # Bypass cache (ttl=0) to force a fresh data sync on every load
             df = conn.read(worksheet="Sheet1", ttl=0).dropna(how="all")
         except Exception:
             df = pd.DataFrame()
@@ -120,11 +144,12 @@ elif st.session_state["page"] == "Dashboard":
     if df.empty:
         st.warning("⚠️ No database metrics located in 'Sheet1'. Submit form registrations to display analytics.")
     else:
-        # Cast critical text-based table elements back to high-fidelity numbers safely
-        for col in ["guava_beds", "gesho_beds", "lemon_beds", "grevillea_beds"]:
+        # Cast numeric columns safely
+        numeric_cols = ["guava_beds", "gesho_beds", "lemon_beds", "grevillea_beds"]
+        for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        # Aggregate total calculation metrics across rows
+        # Calculate KPIs
         total_nurseries = len(df)
         sum_guava = int(df["guava_beds"].sum())
         sum_gesho = int(df["gesho_beds"].sum())
@@ -140,37 +165,60 @@ elif st.session_state["page"] == "Dashboard":
         
         st.divider()
 
-        # Operational interactive filtering elements
+        # Filter Controls
         st.markdown("### 🔍 Filter Controls")
-        sel_woreda = st.multiselect("Isolate targeted Woredas / ወረዳዎች:", options=df["woreda"].unique(), default=df["woreda"].unique())
-        filtered_df = df[df["woreda"].isin(sel_woreda)]
+        sel_woreda = st.multiselect(
+            "Isolate targeted Woredas / ወረዳዎች:", 
+            options=sorted(df["woreda"].dropna().unique()), 
+            default=sorted(df["woreda"].dropna().unique())
+        )
+        filtered_df = df[df["woreda"].isin(sel_woreda)] if sel_woreda else df.iloc[0:0]  # Empty if nothing selected
 
         st.divider()
 
-        # Render data visualization elements
-        ch1, ch2 = st.columns(2)
-        
-        with ch1:
-            st.markdown("#### Crop Distribution Metrics (Total Beds)")
-            species_totals = pd.DataFrame({
-                "Species": ["Guava", "Gesho", "Lemon", "Grevillea"],
-                "Total Beds": [
-                    filtered_df["guava_beds"].sum(), 
-                    filtered_df["gesho_beds"].sum(), 
-                    filtered_df["lemon_beds"].sum(), 
-                    filtered_df["grevillea_beds"].sum()
-                ]
-            })
-            fig_bar = px.bar(species_totals, x="Species", y="Total Beds", color="Species", text_auto=True, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig_bar, use_container_width=True)
+        if filtered_df.empty:
+            st.info("ℹ️ No data matches the selected filters. Adjust your Woreda selection above.")
+        else:
+            # Render data visualization elements
+            ch1, ch2 = st.columns(2)
             
-        with ch2:
-            st.markdown("#### Asset Integrity Status (Fencing Ratio)")
-            fence_counts = filtered_df["is_fenced"].value_counts().reset_index()
-            fence_counts.columns = ["Fenced Status", "Count"]
-            fig_pie = px.pie(fence_counts, values="Count", names="Fenced Status", hole=0.4, color_discrete_sequence=["#2ecc71", "#e74c3c"])
-            st.plotly_chart(fig_pie, use_container_width=True)
+            with ch1:
+                st.markdown("#### Crop Distribution Metrics (Total Beds)")
+                species_totals = pd.DataFrame({
+                    "Species": ["Guava", "Gesho", "Lemon", "Grevillea"],
+                    "Total Beds": [
+                        int(filtered_df["guava_beds"].sum()), 
+                        int(filtered_df["gesho_beds"].sum()), 
+                        int(filtered_df["lemon_beds"].sum()), 
+                        int(filtered_df["grevillea_beds"].sum())
+                    ]
+                })
+                fig_bar = px.bar(
+                    species_totals, 
+                    x="Species", 
+                    y="Total Beds", 
+                    color="Species", 
+                    text_auto=True, 
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+                
+            with ch2:
+                st.markdown("#### Asset Integrity Status (Fencing Ratio)")
+                fence_counts = filtered_df["is_fenced"].value_counts().reset_index()
+                if not fence_counts.empty:
+                    fence_counts.columns = ["Fenced Status", "Count"]
+                    fig_pie = px.pie(
+                        fence_counts, 
+                        values="Count", 
+                        names="Fenced Status", 
+                        hole=0.4, 
+                        color_discrete_sequence=["#2ecc71", "#e74c3c"]
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.info("No fencing data available for the selected filters.")
 
-        st.divider()
-        st.markdown("#### 📁 Active Data Ledger Summary")
-        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+            st.divider()
+            st.markdown("#### 📁 Active Data Ledger Summary")
+            st.dataframe(filtered_df, use_container_width=True, hide_index=True)
